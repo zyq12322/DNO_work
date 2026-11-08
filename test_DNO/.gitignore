@@ -1,0 +1,17 @@
+# 编译输出
+build/
+*.o
+*.out
+*.exe
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 临时输出数据（根据你自己情况决定是否加）
+# eta.txt
+# xi.txt
+# beta.txt
+# EVI.txt
+# *.mp4
+# *.gif

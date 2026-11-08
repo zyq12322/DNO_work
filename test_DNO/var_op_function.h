@@ -18,7 +18,7 @@
 #include <utility>
 #include <memory>
 
-
+const std::complex<double> ImUnit(0.0, 1.0);
 
 using IDBSVariant = std::variant<int,double,bool,std::string>;
 
@@ -925,6 +925,99 @@ inline std::vector<double> fftfreq(int n, double d)
 std::pair<double, double> compute_l2_error(const std::vector<double>& orig, const std::vector<double>& rec);
 std::pair<double, double> compute_l2_error(const std::vector<std::complex<double>>& orig, const std::vector<std::complex<double>>& rec);
 
+// 均匀网格上的数值积分工具
+// 支持 std::vector<double> / std::vector<std::complex<double>> 等待积序列
+// 积分方法
+enum class QuadMethod {
+    Rectangle,     // 左矩形法,                 O(h)
+    Trapezoidal,   // 复化梯形法,               O(h^2)
+    Simpson13,     // 复化 Simpson 1/3 (3点),   O(h^4)
+    Simpson38,     // 复化 Simpson 3/8 (4点),   O(h^4)
+    Boole,         // 复化 Boole  (5点),        O(h^6)
+    NC7,           // 7点 Newton-Cotes,         O(h^8)
+    PeriodicTrap,  // 周期梯形 (等权求和), 对光滑周期函数具谱精度
+    Auto           // 自动选择当前 N 下可用的最高阶方法
+};
+
+// 通用复化 Newton-Cotes:
+//   w 为归一化权重(含 h 的除法), w.size()-1 为每个区段的区间数 m
+//   要求 (N-1) % m == 0
+template <typename T>
+T integrate_newton_cotes(const std::vector<T>& f, double dx,
+                         const std::vector<double>& w)
+{
+    const size_t N = f.size();
+    const size_t m = w.size() - 1;
+    if (N < 2) {
+        throw std::invalid_argument("integrate: need at least 2 samples");
+    }
+    if ((N - 1) % m != 0) {
+        throw std::invalid_argument(
+            "integrate: Simpson/Boole 等方法要求 N-1 能被 "
+            + std::to_string(m) + " 整除 (当前 N=" + std::to_string(N) + ")");
+    }
+    T sum{};   // double -> 0.0, complex -> (0,0)
+    for (size_t b = 0; b < N - 1; b += m) {
+        for (size_t j = 0; j <= m; ++j) {
+            sum += w[j] * f[b + j];
+        }
+    }
+    return dx * sum;
+}
+
+
+// 主入口: 对均匀网格采样序列 f (间距 dx) 积分
+template <typename T>
+T integrate(const std::vector<T>& f, double dx,
+            QuadMethod method = QuadMethod::Auto)
+{
+    const size_t N = f.size();
+    if (N < 2) {
+        throw std::invalid_argument("integrate: need at least 2 samples");
+    }
+    switch (method) {
+
+    case QuadMethod::Rectangle: {           // 左矩形
+        T sum{};
+        for (size_t i = 0; i + 1 < N; ++i) sum += f[i];
+        return dx * sum;
+    }
+
+    case QuadMethod::Trapezoidal: {         // 复化梯形
+        T sum = 0.5 * (f.front() + f.back());
+        for (size_t i = 1; i + 1 < N; ++i) sum += f[i];
+        return dx * sum;
+    }
+
+    case QuadMethod::PeriodicTrap: {        // 周期梯形: 等权
+        T sum{};
+        for (const auto& v : f) sum += v;
+        return dx * sum;
+    }
+
+    // ---- 高阶 Newton-Cotes (权重已归一化) ----
+    case QuadMethod::Simpson13:
+        return integrate_newton_cotes<T>(f, dx, {1.0/3.0, 4.0/3.0, 1.0/3.0});
+    case QuadMethod::Simpson38:
+        return integrate_newton_cotes<T>(f, dx, {3.0/8.0, 9.0/8.0, 9.0/8.0, 3.0/8.0});
+    case QuadMethod::Boole:
+        return integrate_newton_cotes<T>(f, dx,
+            {14.0/45.0, 64.0/45.0, 24.0/45.0, 64.0/45.0, 14.0/45.0});
+    case QuadMethod::NC7:
+        return integrate_newton_cotes<T>(f, dx,
+            {41.0/140.0, 216.0/140.0, 27.0/140.0, 272.0/140.0,
+             27.0/140.0, 216.0/140.0, 41.0/140.0});
+
+    case QuadMethod::Auto:   // 从高到低, 选当前 N 可用的最高阶
+        // m = 权重个数 - 1 = 每个区段的区间数
+        if (N >= 7 && (N - 1) % 6 == 0) return integrate(f, dx, QuadMethod::NC7);     // 7点, m=6
+        if (N >= 5 && (N - 1) % 4 == 0) return integrate(f, dx, QuadMethod::Boole);   // 5点, m=4
+        if (N >= 4 && (N - 1) % 3 == 0) return integrate(f, dx, QuadMethod::Simpson38);
+        if (N >= 3 && (N - 1) % 2 == 0) return integrate(f, dx, QuadMethod::Simpson13);
+        return integrate(f, dx, QuadMethod::Trapezoidal);
+    }
+    throw std::invalid_argument("integrate: unknown QuadMethod");
+}
 
 //fft tools
 /**
@@ -1119,8 +1212,82 @@ private:
     std::variant<fft1d, fft2d> impl;
 };
 
-// external initialization required
+// global fft_op object - external initialization required
 extern std::unique_ptr<fft_op> fft_obj;
 
+// =====================================================================
+// Low-pass filter tools
+// =====================================================================
+
+/**
+ * @brief Available low-pass filter types.
+ *
+ * All filters accept a cut-off wavenumber k_cut and act on the
+ * magnitude |k| of each wavenumber in k_axis. Components with
+ * |k| <= k_cut are (approximately) preserved, components with
+ * |k| > k_cut are attenuated.
+ */
+enum class LowPassType {
+    Ideal,        ///< Sharply truncates |k| > k_cut.        (Gibbs ringing)
+    Exponential,  ///< exp(-(|k|/k_cut)^order).             (Very smooth)
+    Gaussian,     ///< exp(-0.5*(|k|/sigma)^2).             (Smooth)
+    FivePoint,    ///< Five-point 
+    Butterworth   ///< 1 / sqrt(1 + (|k|/k_cut)^(2*order)).
+};
+
+/**
+ * @brief Builds a real-valued low-pass transfer function H(k).
+ *
+ * The returned vector has the same size as @p k_axis and contains
+ * the multiplicative filter weights applied to the spectrum.
+ *
+ * @param k_axis Wavenumber axis. Values may be negative (FFT order).
+ * @param k_cut  Cut-off wavenumber (>0).
+ * @param type   Filter type (see LowPassType).
+ * @param width  Transition half-width used by Gaussian / FivePoint /
+ *               Exponential filters. Interpreted as a fraction of k_cut
+ *               when type == FivePoint (0..1). For Gaussian / Exponential
+ *               it is a relative scale factor.
+ * @param order  Filter order for Exponential / Butterworth.
+ *
+ * @return Vector<double> H(k) of the same length as k_axis.
+ *
+ * @throws std::invalid_argument if k_cut <= 0, k_axis empty,
+ *         or width <= 0 for smooth filters.
+ */
+std::vector<double> build_lowpass_transfer(
+    const std::vector<double>& k_axis,
+    double k_cut,
+    LowPassType type,
+    double width = 1.0,
+    double order = 2.0);
+
+/**
+ * @brief Applies a low-pass filter to a complex spectrum.
+ *
+ * Computes
+ *
+ *     f_hat_filtered[i] = H(k_axis[i]) * f_hat[i]
+ *
+ * and returns the filtered spectrum. The input vectors are not modified.
+ *
+ * @param k_axis Wavenumber axis (same size as f_hat).
+ * @param f_hat  Input complex spectrum.
+ * @param k_cut  Cut-off wavenumber.
+ * @param type   Filter type.
+ * @param width  Transition width (see build_lowpass_transfer).
+ * @param order  Filter order (see build_lowpass_transfer).
+ *
+ * @return Filtered complex spectrum, same size as f_hat.
+ *
+ * @throws std::runtime_error if k_axis.size() != f_hat.size().
+ */
+std::vector<std::complex<double>> lowpass_filter_spectrum(
+    const std::vector<double>& k_axis,
+    const std::vector<std::complex<double>>& f_hat,
+    double k_cut,
+    LowPassType type,
+    double width = 1.0,
+    double order = 2.0);
 
 #endif//VAR_OP_FUNCTION_H

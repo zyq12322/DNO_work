@@ -83,7 +83,6 @@ int main() {
 
             // 每个 (DNO_M, DNO_Mb) 组合都重新初始化工作区
             // （阶乘表、D_pow_hat、eta/beta 幂次表都会按当前阶数重建）
-            resize_DNO_workspace(DNO_M, DNO_Mb, N);
             init_DNO_workspace_2d(DNO_M, DNO_Mb, N, k_grid, eta_hat, beta_hat, dealiase_flag);
 
             // DNO result

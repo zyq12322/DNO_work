@@ -168,7 +168,7 @@ private:
     std::variant<std::monostate, Dealiaser1D, Dealiaser2D> impl;
 };
 
-// external initialization required
+// global object - external initialization required
 extern std::unique_ptr<Dealiaser> dealiaser;
 
 #endif // DEALIASER_H

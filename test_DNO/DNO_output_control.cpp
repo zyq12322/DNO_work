@@ -18,9 +18,9 @@ DNOOutputRecorder::DNOOutputRecorder(const DNOOutputConfig& cfg, double t0)
         return;
     }
 
-    if (!fft_obj) {
+    if (!fft_obj || !dealiaser) {
         throw std::runtime_error(
-            "DNOOutputRecorder: fft_obj is not initialized");
+            "DNOOutputRecorder: fft_obj or dealiaser is not initialized");
     }
 
     eta_out_.open(cfg_.eta_file);
@@ -32,12 +32,36 @@ DNOOutputRecorder::DNOOutputRecorder(const DNOOutputConfig& cfg, double t0)
             "DNOOutputRecorder: cannot open output files");
     }
 
+    N_ = cfg_.x_axis.size();
+
+    eta_phy_.resize(N_);
+    xi_phy_.resize(N_);
+    beta_phy_.resize(N_);
+
+    G_hat_.resize(N_);
+    G_phy_.resize(N_);
+
+    eta_x_hat_.resize(N_);
+    eta_x_phy_.resize(N_);
+
+    xi_G_hat_.resize(N_);
+    eta2_hat_.resize(N_);
+    xi_etax_hat_.resize(N_);
+    xi_G_phy_.resize(N_);
+    eta2_phy_.resize(N_);
+    xi_etax_phy_.resize(N_);
+
+    f_Ek_.resize(N_);
+    f_Ep_.resize(N_);
+    f_I_.resize(N_);
+    f_V_.resize(N_);
+
     eta_out_  << std::setprecision(16);
     xi_out_   << std::setprecision(16);
     beta_out_ << std::setprecision(16);
     EVI_out_ << std::setprecision(16);
 
-    // 表头: 0, x0, x1, ..., x_{N-1}
+    // eta/xi/beta表头: 0, x0, x1, ..., x_{N-1}
     eta_out_  << 0;
     xi_out_   << 0;
     beta_out_ << 0;
@@ -62,9 +86,9 @@ void DNOOutputRecorder::record(
     const DNOSystemParams& p)
 {
     if (!record_) return;
-
+    // check size
     const size_t N = cfg_.x_axis.size();
-    if (eta_hat.size() != N || xi_hat.size() != N || beta_hat.size() != N || gamma_hat.size() != N) {
+    if (eta_hat.size() != N || xi_hat.size() != N || beta_hat.size() != N || gamma_hat.size() != N || p.k_axis.size() != N) {
         throw std::invalid_argument(
             "DNOOutputRecorder::record: input size mismatch with x_axis");
     }
@@ -73,78 +97,87 @@ void DNOOutputRecorder::record(
             "DNOOutputRecorder::record: fft_obj or dealiaser is not initialized");
     }
 
-    const std::complex<double> ImUnit(0.0, 1.0);
+    // 防御：若外部 N 变了（正常不会），重新分配
+    if (N_ != N) {
+        N_ = N;
+        eta_phy_.resize(N);   xi_phy_.resize(N);   beta_phy_.resize(N);
+        G_hat_.resize(N);     G_phy_.resize(N);
+        eta_x_hat_.resize(N); eta_x_phy_.resize(N);
+        xi_G_hat_.resize(N);  eta2_hat_.resize(N); xi_etax_hat_.resize(N);
+        xi_G_phy_.resize(N);  eta2_phy_.resize(N); xi_etax_phy_.resize(N);
+        f_Ek_.resize(N); f_Ep_.resize(N); f_I_.resize(N); f_V_.resize(N);
+    }
 
     // 频谱 -> 物理空间
-    const auto eta_phy  = fft_obj->ifft(eta_hat);
-    const auto xi_phy   = fft_obj->ifft(xi_hat);
-    const auto beta_phy = fft_obj->ifft(beta_hat);
+    eta_phy_  = fft_obj->ifft(eta_hat);
+    xi_phy_   = fft_obj->ifft(xi_hat);
+    beta_phy_ = fft_obj->ifft(beta_hat);
 
-    std::vector<std::complex<double>> G_hat(N, {0.0, 0.0});
 
     init_DNO_workspace_2d(p.DNO_M, p.DNO_Mb, N, p.k_axis,
                           eta_hat, beta_hat, p.dealiase_flag);
 
-    partial_eta_partial_t_2d(xi_hat, gamma_hat, G_hat,
+    partial_eta_partial_t_2d(xi_hat, gamma_hat, G_hat_,
                              p.h0, p.DNO_M, p.DNO_Mb, p.dealiase_flag);
 
     // --- 2) 逆变换 ---
-    const std::vector<std::complex<double>> G_phy = fft_obj->ifft(G_hat);
+    G_phy_ = fft_obj->ifft(G_hat_);
 
-    // --- 3) η_x 的谱微分 ---
-    std::vector<std::complex<double>> eta_x_hat(N);
+    // --- 3) η_x 的Fourier Sapce Value ---
     for (size_t i = 0; i < N; ++i) {
-        eta_x_hat[i] = ImUnit * D_pow_hat[1][i] * eta_hat[i];
+        eta_x_hat_[i] = ImUnit * D_pow_hat[1][i] * eta_hat[i];
     }
-    const std::vector<std::complex<double>> eta_x_phy = fft_obj->ifft(eta_x_hat);
+    // Fourier Space -> Physical space
+    eta_x_phy_ = fft_obj->ifft(eta_x_hat_);
 
-    // --- 4) 矩形法积分 ---
-    //     非线性乘积 (ξ·G, η·η, ξ·η_x) 按 p.dealiase_flag 分情况处理：
-    //       - dealiase_flag == true ：在谱空间通过 dealiaser 计算乘积，避免混叠
-    //       - dealiase_flag == false：直接在物理空间逐点相乘
+    // --- 4) 数值积分（周期网格，使用 integrate 工具 + PeriodicTrap） ---
+    //     x_axis 为 FFT 周期网格：N 点覆盖 [0,L)，dx = L/N。
+    //     被积函数（η, ξ, G 等）均为光滑周期函数，PeriodicTrap 对其具谱精度。
+    //     非线性乘积 (ξ·G, η·η, ξ·η_x) 按 p.dealiase_flag 分情况处理。
     const double dx = cfg_.x_axis[1] - cfg_.x_axis[0];
+    const QuadMethod qm = QuadMethod::PeriodicTrap;
+
     double Ek = 0.0, Ep = 0.0, I = 0.0, V = 0.0;
 
     if (!p.dealiase_flag) {
-        // ---- 物理空间直接逐点相乘 ----
+        // ---- 物理空间逐点相乘，再周期积分 ----
         for (size_t i = 0; i < N; ++i) {
-            const double eta_v  = eta_phy[i].real();
-            const double beta_v  = beta_phy[i].real();
-            const double xi_v   = xi_phy[i].real();
-            const double G_v    = G_phy[i].real();
-            const double etax_v = eta_x_phy[i].real();
+            const double eta_v  = eta_phy_[i].real();
+            const double beta_v = beta_phy_[i].real();
+            const double xi_v   = xi_phy_[i].real();
+            const double G_v    = G_phy_[i].real();
+            const double etax_v = eta_x_phy_[i].real();
 
-            Ek += 0.5 * xi_v * G_v * dx;
-            Ep += 0.5 * p.g * eta_v * eta_v * dx;
-            I  +=       xi_v * etax_v * dx;
-            V  += (eta_v - beta_v + p.h0) * dx;
+            f_Ek_[i] = 0.5 * xi_v * G_v;
+            f_Ep_[i] = 0.5 * p.g * eta_v * eta_v;
+            f_I_[i]  =       xi_v * etax_v;
+            f_V_[i]  = (eta_v - beta_v + p.h0);
         }
+        Ek = integrate(f_Ek_, dx, qm);
+        Ep = integrate(f_Ep_, dx, qm);
+        I  = integrate(f_I_,  dx, qm);
+        V  = integrate(f_V_,  dx, qm);
     } else {
-        // ---- 谱空间通过 dealiaser 计算乘积，再逆变换积分 ----
-        std::vector<std::complex<double>> xiG_hat(N);
-        std::vector<std::complex<double>> eta2_hat(N);
-        std::vector<std::complex<double>> xietax_hat(N);
+        // ---- 谱空间通过 dealiaser 计算乘积，再逆变换到物理空间积分 ----
 
-        // ξ · (G ξ)
-        (*dealiaser)(xi_hat.data(), G_hat.data(),
-                     false, false, xiG_hat.data());
-        // η · η
-        (*dealiaser)(eta_hat.data(), eta_hat.data(),
-                     false, false, eta2_hat.data());
-        // ξ · η_x
-        (*dealiaser)(xi_hat.data(), eta_x_hat.data(),
-                     false, false, xietax_hat.data());
+        (*dealiaser)(xi_hat.data(), G_hat_.data(),      false, false, xi_G_hat_.data());
+        (*dealiaser)(eta_hat.data(), eta_hat.data(),   false, false, eta2_hat_.data());
+        (*dealiaser)(xi_hat.data(), eta_x_hat_.data(),  false, false, xi_etax_hat_.data());
 
-        const auto xiG_phy    = fft_obj->ifft(xiG_hat);
-        const auto eta2_phy   = fft_obj->ifft(eta2_hat);
-        const auto xietax_phy = fft_obj->ifft(xietax_hat);
+        xi_G_phy_    = fft_obj->ifft(xi_G_hat_);
+        eta2_phy_    = fft_obj->ifft(eta2_hat_);
+        xi_etax_phy_ = fft_obj->ifft(xi_etax_hat_);
 
         for (size_t i = 0; i < N; ++i) {
-            Ek += 0.5 *       xiG_phy[i].real()    * dx;
-            Ep += 0.5 * p.g * eta2_phy[i].real()   * dx;
-            I  +=             xietax_phy[i].real() * dx;
-            V  += (eta_phy[i].real() - beta_phy[i].real() + p.h0) * dx;
+            f_Ek_[i] = 0.5 *       xi_G_phy_[i].real();
+            f_Ep_[i] = 0.5 * p.g * eta2_phy_[i].real();
+            f_I_[i]  =             xi_etax_phy_[i].real();
+            f_V_[i]  = eta_phy_[i].real() - beta_phy_[i].real() + p.h0;
         }
+        Ek = integrate(f_Ek_, dx, qm);
+        Ep = integrate(f_Ep_, dx, qm);
+        I  = integrate(f_I_,  dx, qm);
+        V  = integrate(f_V_,  dx, qm);
     }
 
     eta_out_  << t;
@@ -153,9 +186,9 @@ void DNOOutputRecorder::record(
     EVI_out_ << t;
 
     for (size_t i = 0; i < N; ++i) {
-        eta_out_  << "," << eta_phy[i].real();
-        xi_out_   << "," << xi_phy[i].real();
-        beta_out_ << "," << beta_phy[i].real();
+        eta_out_  << "," << eta_phy_[i].real();
+        xi_out_   << "," << xi_phy_[i].real();
+        beta_out_ << "," << beta_phy_[i].real();
     }
 
     EVI_out_  << "," << Ek;

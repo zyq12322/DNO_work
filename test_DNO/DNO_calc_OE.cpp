@@ -1069,25 +1069,34 @@ void G2_2d(
 void partial_eta_partial_t_2d(
     const std::vector<std::complex<double>>& xi_hat,
     const std::vector<std::complex<double>>& gamma_hat,
-    std::vector<std::complex<double>>& eta_t_hat,
-    double h0,
+    std::vector<std::complex<double>>& eta_t_hat, // fill this with the result G(\beta, \eta)[\xi, \gamma]
+    double h0, // mean_depth
     int DNO_M,
     int DNO_Mb,
     bool dealiase_flag,
     DNOBufferCache* cache)      // ← 新增可选参数
 {
-    if (DNO_M < 0 || DNO_Mb < 0) {
-        throw std::invalid_argument(
-            "DNO_M and DNO_Mb must be non-negative in partial_eta_partial_t_2d");
-    }
+    // check size
     const size_t N = xi_hat.size();
-    if (gamma_hat.size() != N || eta_t_hat.size() != N) {
+
+    if (DNO_M < 0 || DNO_Mb < 0 || N == 0) {
+        throw std::invalid_argument(
+            "DNO_M and DNO_Mb must be non-negative and N must be positive in partial_eta_partial_t_2d");
+    }
+
+    if (gamma_hat.size() != N) {
         throw std::invalid_argument(
             "size mismatch in partial_eta_partial_t_2d");
     }
+    // allocate correct size of memory for vector to store result of \partial_t \eta
+    if (eta_t_hat.size() != N) {
+        eta_t_hat.resize(N);
+    }
 
     // 用提供的缓存或本地临时对象
-    DNOBufferCache local_cache;
+    // 未传入 cache 时使用函数级静态缓存：N/DNO_M/DNO_Mb 不变时 ensure_size 为空操作，
+    // 避免每次调用都重新分配全部中间缓冲区。
+    static thread_local DNOBufferCache local_cache;
     DNOBufferCache& C = cache ? *cache : local_cache;
     C.ensure_size(N, DNO_M, DNO_Mb);
 
@@ -1117,24 +1126,33 @@ void partial_xi_partial_t_2d(
     bool dealiase_flag,
     DNOBufferCache* cache)      // ← 新增可选参数
 {
-    if (DNO_M < 0 || DNO_Mb < 0) {
-        throw std::invalid_argument(
-            "DNO_M and DNO_Mb must be non-negative in partial_xi_partial_t_2d");
-    }
-    const size_t N = xi_hat.size();
-    if (eta_pow_hat.size() < 2 || eta_pow_hat[1].size() != N) {
-        throw std::invalid_argument(
-            "partial_xi_partial_t_2d: eta_pow_hat[1] not initialized");
-    }
-    if (G_hat.size() != N || xi_t_hat.size() != N) {
-        throw std::invalid_argument(
-            "partial_xi_partial_t_2d: G_hat or xi_t_hat size mismatch");
-    }
     if (!fft_obj || !dealiaser) {
-        throw std::runtime_error("Global FFT/Dealiaser not initialized");
+        throw std::runtime_error("Global fft_op/Dealiaser object not initialized");
     }
 
-    DNOBufferCache local_cache;
+    // check size
+    const size_t N = xi_hat.size();
+    if (DNO_M < 0 || DNO_Mb < 0 || N == 0) {
+        throw std::invalid_argument(
+            "DNO_M and DNO_Mb must be non-negative and N must be positive in partial_xi_partial_t_2d");
+    }
+    
+    if (eta_pow_hat.size() < 2 || eta_pow_hat[1].size() != N) {
+        throw std::invalid_argument(
+            "eta_pow_hat size error in partial_xi_partial_t_2d");
+    }
+    if (G_hat.size() != N) {
+        throw std::invalid_argument(
+            "size mismatch in partial_xi_partial_t_2d");
+    }
+
+    // allocate correct size of memory for vector to store result of \partial_t \xi
+    if (xi_t_hat.size() != N) {
+        xi_t_hat.resize(N);
+    }
+    
+
+    static thread_local DNOBufferCache local_cache;
     DNOBufferCache& C = cache ? *cache : local_cache;
     C.ensure_size(N, DNO_M, DNO_Mb);
 

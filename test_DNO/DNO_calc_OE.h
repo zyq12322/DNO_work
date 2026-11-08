@@ -11,12 +11,16 @@
 #include <cassert>
 
 // external initialization required
-extern std::vector<double> factorial_list;// max(DNO_M, DNO_Mb)>0 ? [0!,1!,...,max(DNO_M, DNO_Mb)!] : [0!,1!]
+// [0!,1!,...]
+extern std::vector<double> factorial_list;// [max( (DNO_M + 1) , (DNO_Mb + 1) , 2 )]
 // \eta  \beta and k pow list in Fourier space.-the index corresponds to the power.
 // external initialization required
-extern std::vector<std::vector<std::complex<double>>> eta_pow_hat;//DNO_M > 0 ? (DNO_M + 1)*len(x) : 2*len(x)
-extern std::vector<std::vector<std::complex<double>>> beta_pow_hat;//DNO_Mb > 0 ? (DNO_Mb + 1)*len(x) : 2*len(x)
-extern std::vector<std::vector<std::complex<double>>> D_pow_hat;//max(DNO_M, DNO_Mb)>0 ? (max(DNO_M, DNO_Mb) + 1)*len(x) : 2*len(x)
+// [eta^0, eta^1, ...] in Fourier space
+extern std::vector<std::vector<std::complex<double>>> eta_pow_hat;//[max( (DNO_M + 1), 2 ) , len(x)]
+// [beta^0, beta^1, ...] in Fourier space
+extern std::vector<std::vector<std::complex<double>>> beta_pow_hat;//[max( (DNO_Mb + 1), 2 ) , len(x)]
+// powers of wave number axis k , [k^0, k^1, ...] 
+extern std::vector<std::vector<std::complex<double>>> D_pow_hat;//[max( (DNO_M + 1) , (DNO_Mb + 1) , 2 ) , len(x)]
 
 // =====================================================================
 // DNOBufferCache
@@ -117,7 +121,8 @@ struct DNOBufferCache
     }
 };
 
-// factorial list calculation- [0!,1!,2!,...]
+// make sure correct memory has been allocated for factorial_list before calling this function
+// fill factorial_list with - [0!,1!,2!,...]
 inline void create_factorial_list() {
     // 0! = 1
     factorial_list[0] = 1;
@@ -193,8 +198,8 @@ void G2_m0_m1_2d(
     int DNO_Mb,// max power of \beta;
     bool dealiase_flag);// flag for dealiasing product-true: use dealiasing for product between two vectors;
 
-// resize eta_pow_hat/beta_pow_hat/D_pow_hat/factorial_list
-// and then create factorial_list according to it's size N - [0!, 1!,..., (N-1)!].
+// resize eta_pow_hat/beta_pow_hat/D_pow_hat/factorial_list according to DNO_M/DNO_Mb/N
+// and then fill factorial_list according to it's size.
 // make sure at least two elements in them because the index 1 is always used in DNO calculation.
 inline void resize_DNO_workspace(int DNO_M, int DNO_Mb, size_t N)
 {
@@ -202,32 +207,46 @@ inline void resize_DNO_workspace(int DNO_M, int DNO_Mb, size_t N)
         throw std::invalid_argument(
             "resize_DNO_workspace: DNO_M and DNO_Mb must be non-negative.");
     }
-    
+    // calculate size according to DNO_M, DNO_Mb and N(len(x))
+    // if (DNO_M == 0) Max_eta_order = 2;
     int Max_eta_order = std::max(DNO_M + 1, 2);
+    // if (DNO_Mb == 0) Max_beta_order = 2;
     int Max_beta_order = std::max(DNO_Mb + 1, 2);
     int Max_D_order = std::max(Max_eta_order, Max_beta_order);
+
+    // resize global work vector
+    D_pow_hat.resize(Max_D_order);
     factorial_list.resize(Max_D_order);
     eta_pow_hat.resize(Max_eta_order);
-    for (int i = 0; i < Max_eta_order; ++i) eta_pow_hat[i].resize(N);
     beta_pow_hat.resize(Max_beta_order);
+
+    for (int i = 0; i < Max_eta_order; ++i) eta_pow_hat[i].resize(N);
     for (int i = 0; i < Max_beta_order; ++i) beta_pow_hat[i].resize(N);
-    D_pow_hat.resize(Max_D_order);
     for (int i = 0; i < Max_D_order; ++i) D_pow_hat[i].resize(N);
 
-    // ---- 初始化阶乘表 ----
+    // fill factorial_list with factorial values [0!, 1!, ...]
     create_factorial_list();
 }
 
-// used for both 2d and 3d conditions. 
+// make sure resize_DNO_workspace(int DNO_M, int DNO_Mb, size_t N) has been called before calling this function
+// set eta_pow_hat/beta_pow_hat with [eta^0, eta^1, ...]/[beta^0, beta^1, ...] in Fourier space
+// eta_hat : eta in Fourier space
+// beta_hat : beta in Fourier space
+// dealiase_flag : use dealiser(true) or not for nonlinear product
 inline void set_eta_beta_pow_hat(const std::vector<std::complex<double>>& eta_hat, 
                                 const std::vector<std::complex<double>>& beta_hat,
                                 bool dealiase_flag)
 {
-    if (!fft_obj || !dealiaser) throw std::runtime_error("Global FFT/Dealiaser not initialized");
+    // check global objects
+    if (!fft_obj || !dealiaser) throw std::runtime_error("Global fft_op/Dealiaser object not initialized");
+    // check eta/beta have the same size - len(x)
     if (eta_hat.size() != beta_hat.size()) throw std::runtime_error("size of eta, beta is not equal in set_eta_beta_pow_hat()!");
+    // N = len(x)
     size_t N = eta_hat.size();
 
+    // eta_pow_hat[0] will not be used so can be filled with all ones.
     std::fill(eta_pow_hat[0].begin(), eta_pow_hat[0].end(), std::complex<double>(1.0, 0.0));
+    // eta^1
     eta_pow_hat[1] = eta_hat;
 
     std::vector<std::complex<double>> eta_phy = fft_obj->ifft(eta_hat);
@@ -248,7 +267,9 @@ inline void set_eta_beta_pow_hat(const std::vector<std::complex<double>>& eta_ha
         }
     }
 
+    // eta_pow_hat[0] will not be used so can be filled with all ones.
     std::fill(beta_pow_hat[0].begin(), beta_pow_hat[0].end(), std::complex<double>(1.0, 0.0));
+    // eta^1
     beta_pow_hat[1] = beta_hat;
 
     std::vector<std::complex<double>> beta_phy = fft_obj->ifft(beta_hat);
@@ -270,12 +291,16 @@ inline void set_eta_beta_pow_hat(const std::vector<std::complex<double>>& eta_ha
     }
 }
 
+// make sure resize_DNO_workspace(int DNO_M, int DNO_Mb, size_t N) has been called before calling this function
+// set D_pow_hat with [k^0, k^1, ...], D corresponds to operator -i\partial_x (k_axis in Fourier space)
+// k_axis : wave number axis , k_axis[i] = 2.0 * M_PI * fftfreq(N, dx)[i]
 inline void init_D_pow_hat_2d(const std::vector<double>& k_axis) {
+    // N = len(x) = len(k_axis)
     size_t N = k_axis.size();
 
-    // D^0 must be all ones
+    // D^0 must be set with all ones.
     std::fill(D_pow_hat[0].begin(), D_pow_hat[0].end(), std::complex<double>(1.0, 0.0));
-    
+    // D^1
     D_pow_hat[1].assign(k_axis.begin(), k_axis.end());
     
     for (size_t p = 2; p < D_pow_hat.size(); ++p) {
@@ -290,13 +315,14 @@ inline void init_D_pow_hat_2d(const std::vector<double>& k_axis) {
  *
  * 必须在任何 G1_* / G2_* 函数调用之前执行本函数。
  *
- * 本函数完成：
+ * 本函数动作：
  *   1. 校验全局 fft_obj、dealiaser 已创建；
- *   2. 初始化阶乘表 factorial_list（长度 max(DNO_M, DNO_Mb) + 1）；
- *   3. 初始化 D_pow_hat（D = -i d/dx，傅里叶空间中对应乘角波数 k）；
- *   4. 通过 set_eta_beta_pow_hat 初始化 eta_pow_hat / beta_pow_hat。
+ *   2. check size of input vectors
+ *   3. resize_DNO_workspace(DNO_M, DNO_Mb, N);
+ *   4. set D_pow_hat with [k^0, k^1, ...]t（D = -i d/dx，傅里叶空间中对应乘角波数 k）；
+ *   5. set eta_pow_hat/beta_pow_hat with [eta^0, eta^1, ...]/[beta^0, beta^1, ...] in Fourier space
  *
- * 调用顺序示例（1D，物理域长度 L，格点数 N，步长 dx = L / N）：
+ * 调用顺序示例（2D，x物理域长度 L，格点数 N，步长 dx = L / N）：
  * @code
  *     // 1. 先创建全局 FFT / Dealiaser 对象
  *     fft_obj   = std::make_unique<fft_op>(N);
@@ -312,15 +338,16 @@ inline void init_D_pow_hat_2d(const std::vector<double>& k_axis) {
  *         k_axis[i] = 2.0 * M_PI * freq[i]; // 角波数，单位 rad/m
  *     }
  *
- *     // 3. 初始化工作区（传入当前的 DNO_M / DNO_Mb / eta_hat / beta_hat）
- *     resize_DNO_workspace(DNO_M, DNO_Mb, N);
+ *     // 3. 初始化工作区
+ *     //    resize eta_pow_hat/beta_pow_hat/D_pow_hat/factorial_list according to DNO_M/DNO_Mb/N
+ *     //    fill factorial_list/eta_pow_hat/beta_pow_hat/D_pow_hat
  *     init_DNO_workspace_2d(DNO_M, DNO_Mb, N, k_axis,
  *                        eta_hat, beta_hat, dealiase_flag);
  *
  *     // 4. 然后即可调用 G1_* / G2_* 系列 计算DNO结果
  *     // calculate DNO result
-       std::vector<std::complex<double>> GC_hat(N, std::complex<double>(0.0, 0.0));
-       partial_eta_partial_t_2d(xi_hat, gamma_hat, GC_hat, mean_depth, DNO_M, DNO_Mb, dealiase_flag);
+       std::vector<std::complex<double>> G_hat(N, std::complex<double>(0.0, 0.0));
+       partial_eta_partial_t_2d(xi_hat, gamma_hat, G_hat, mean_depth, DNO_M, DNO_Mb, dealiase_flag);
  * @endcode
  *
  * @param DNO_M         η 的最大幂次（>= 0）
@@ -378,11 +405,40 @@ inline void init_DNO_workspace_2d(
             "init_DNO_workspace: eta_hat or beta_hat size does not match N.");
     }
 
-    // ---- 2. 初始化 D_pow_hat ----
+    // ---- 尺寸检查：若四个全局工作区的尺寸已经与目标一致，则跳过 resize ----
+    // 目标尺寸需与 resize_DNO_workspace 内部的推导完全一致
+    const int Max_eta_order  = std::max(DNO_M  + 1, 2);
+    const int Max_beta_order = std::max(DNO_Mb + 1, 2);
+    const int Max_D_order    = std::max(Max_eta_order, Max_beta_order);
+
+    // 检查“外层行数 + 每行长度”是否全部匹配
+    auto size_ok = [N](const std::vector<std::vector<std::complex<double>>>& v,
+                       int expected_outer) -> bool
+    {
+        if (static_cast<int>(v.size()) != expected_outer) return false;
+        for (const auto& row : v) {
+            if (row.size() != N) return false;
+        }
+        return true;
+    };
+
+    const bool workspace_size_ok =
+           size_ok(eta_pow_hat,  Max_eta_order)
+        && size_ok(beta_pow_hat, Max_beta_order)
+        && size_ok(D_pow_hat,    Max_D_order)
+        && (factorial_list.size() == static_cast<size_t>(Max_D_order));
+
+    if (!workspace_size_ok) {
+        // resize eta_pow_hat/beta_pow_hat/D_pow_hat/factorial_list according to changed DNO_M/DNO_Mb/N
+        // and then fill factorial_list according to it's size.
+        resize_DNO_workspace(DNO_M, DNO_Mb, N);
+    }
+
+    // set D_pow_hat with [k^0, k^1, ...]
     //     约定：D = -i d/dx，傅里叶空间中对应乘实数角波数 k
     init_D_pow_hat_2d(k_axis);
 
-    // ---- 3. 初始化 eta_pow_hat / beta_pow_hat ----
+    // set eta_pow_hat/beta_pow_hat with [eta^0, eta^1, ...]/[beta^0, beta^1, ...] in Fourier space
     set_eta_beta_pow_hat(
         eta_hat,
         beta_hat,

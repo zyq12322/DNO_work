@@ -6,7 +6,7 @@
 #include <cassert>
 #include <cstdlib>   // for std::exit
 #include <stdexcept>
-// external initialization required
+// global object - external initialization required
 std::unique_ptr<Dealiaser> dealiaser;
 
 Dealiaser1D::Dealiaser1D(size_t N, unsigned planner_effort)

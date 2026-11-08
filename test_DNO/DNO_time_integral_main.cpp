@@ -2,15 +2,23 @@
 #include <iostream>
 
 int main() {
-    const size_t N = 1024;
-    const double L = 32.0 * M_PI;
+    const size_t N = 4096;
+    const double L = 64.0 * M_PI;
     const double dx = L / N;
-    const double a = 0.05;
+    const double a = 0.1;
     const double g = 9.81;
     const double k = 1.0;
-    const double h = 11.0;
+    const double h = 11.0; // actual depth
     const double mean_depth = 10.0;
+    // linear dispersion relation
     const double omega = std::sqrt(g * k * std::tanh(k * h));
+    const double period = 2 * M_PI / omega;
+    const double H_gT2 = 2 * a / g / period / period;
+    const double d_gT2 = h / g / period / period;
+    std::cout << std::scientific << std::setprecision(6);
+    std::cout << "period = " << period << " s\n";
+    std::cout << "H/(gT^2) = " << H_gT2 << "\n";
+    std::cout << "d/(gT^2) = " << d_gT2 << "\n";
 
     // 1. 全局 FFT / Dealiaser（本模块依赖它们）
     fft_obj   = std::make_unique<fft_op>(N);
@@ -30,11 +38,54 @@ int main() {
     // 4. 初始 η、ξ
     std::vector<double> eta_phy(N), xi_phy(N);
 
-    // Airy wave
+    // // initial condition - Airy wave
+    // for (size_t i = 0; i < N; ++i) {
+    //     eta_phy[i] = a * std::cos(k * x_grid[i]);
+    //     xi_phy[i]  = a * g / omega * std::cosh(k * (eta_phy[i] + h))
+    //                / std::cosh(k * h) * std::sin(k * x_grid[i]);
+    // }
+
+    // ---- 初始条件：Stokes 二阶波（严格依据提供的图片公式），t = 0 ----
+    // 波面 theta = kx - wt，在 t = 0 时 theta = kx
+    const double sigma = std::tanh(k * h);
+    const double sh = std::sinh(k * h);
+    
+    // 1. 计算 eta 的三个部分
+    // 常数项（平均水位下降 / set-down）
+    const double eta0 = - (k * a * a) / (2.0 * std::sinh(2.0 * k * h)); 
+    
+    // 二阶谐波系数
+    const double eta2_coef = (k * a * a / 4.0) * (3.0 - sigma * sigma) / (sigma * sigma * sigma);
+
+    // 2. 计算势 xi 的系数
+    // 一阶势系数
+    const double xi1_coef = a * g / omega;
+    // 二阶势系数：注意分母是 8 * sinh^4(kd)
+    const double xi2_coef = (3.0 * a * a * omega) / (8.0 * std::pow(sh, 4)); 
+
     for (size_t i = 0; i < N; ++i) {
-        eta_phy[i] = a * std::cos(k * x_grid[i]);
-        xi_phy[i]  = a * g / omega * std::cosh(k * (eta_phy[i] + h))
-                   / std::cosh(k * h) * std::sin(k * x_grid[i]);
+        const double theta = k * x_grid[i];      // t = 0
+
+        // η：常数项 + 一阶 + 二阶
+        eta_phy[i] = eta0 
+                   + a * std::cos(theta)
+                   + eta2_coef * std::cos(2.0 * theta);
+
+        // ξ (即表面势 Φ|_{z=η})：一阶 + 二阶
+        // 注意图中的 z+d，这里的 z 是自由表面高程 eta，d 是水深 h
+        const double z_plus_d = eta_phy[i] + h;
+
+        // 一阶 Airy 势
+        const double xi1 = xi1_coef 
+                         * std::cosh(k * z_plus_d) / std::cosh(k * h) 
+                         * std::sin(theta);
+                         
+        // 二阶 Stokes 势
+        const double xi2 = xi2_coef 
+                         * std::cosh(2.0 * k * z_plus_d) 
+                         * std::sin(2.0 * theta);
+
+        xi_phy[i] = xi1 + xi2;
     }
 
     DNOState state;
@@ -119,7 +170,7 @@ int main() {
     // 5.5 输出记录：每 0.01 时间单位写出一次 η、ξ、β，Ek/Ep/I/V
     DNOOutputConfig out_cfg;
     out_cfg.enabled  = true;
-    out_cfg.interval = 0.01;
+    out_cfg.interval = 0.001;
     out_cfg.x_axis   = x_grid;          // 长度必须 = N
     out_cfg.eta_file  = "eta.txt";
     out_cfg.xi_file   = "xi.txt";
@@ -130,9 +181,9 @@ int main() {
 
     // 6. 时间推进
     const size_t n = dno_time_integrate(
-        state, /*t0=*/0.0, /*t_end=*/50.0, /*dt_init=*/1e-4,
-        /*rtol=*/5e-12, /*atol=*/5e-13, p,
-        /*max_steps=*/100000,
+        state, /*t0=*/0.0, /*t_end=*/5, /*dt_init=*/1e-4,
+        /*rtol=*/5e-12, /*atol=*/1e-12, p,
+        /*max_steps=*/1000000,
         &recorder);
 
     std::cout << "Accepted steps: " << n << "\n";
