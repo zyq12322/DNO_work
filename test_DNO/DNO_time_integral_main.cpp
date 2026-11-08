@@ -88,17 +88,27 @@ int main() {
         xi_phy[i] = xi1 + xi2;
     }
 
+    // 放入初始条件，在积分器中会随时间更新
     DNOState state;
     state.eta_hat = fft_obj->fft(double_to_complex_real(eta_phy));
     state.xi_hat  = fft_obj->fft(double_to_complex_real(xi_phy));
 
-    DNOSystemParams p;
-    p.h0            = mean_depth;
-    p.g             = g;
-    p.DNO_M         = DNO_M;
-    p.DNO_Mb        = DNO_Mb;
-    p.dealiase_flag = true;
-    p.k_axis        = k_axis;
+    g_dno_params.h0            = mean_depth;
+    g_dno_params.g             = g;
+    g_dno_params.DNO_M         = DNO_M;
+    g_dno_params.DNO_Mb        = DNO_Mb;
+    g_dno_params.dealiase_flag = true;
+    g_dno_params.x_axis        = x_grid;
+    g_dno_params.k_axis        = k_axis;
+    // 计算最大波数，用 std::max_element 自动搜索绝对值最大项
+    auto k_max_it = std::max_element(
+        k_axis.begin(), k_axis.end(),
+        [](double a, double b) { return std::abs(a) < std::abs(b); }
+    );
+    if (k_max_it == k_axis.end()) {
+        throw std::runtime_error("k_axis is empty");
+    }
+    g_dno_params.k_max = std::abs(*k_max_it);
 
     // 5. β、γ 时间回调（示例：β 有微小周期起伏）
     // 5. β、γ 时间回调：底部为随时间平滑上升的高斯突起，最终稳定
@@ -115,7 +125,7 @@ int main() {
     // const double t_r     = 0.2;         // 上升半程时刻
     // const double tau_b   = 0.05;         // 上升时间尺度
 
-    // p.bc_func = [&, A_inf, sigma_b, x0_b, t_r, tau_b](
+    // g_dno_params.bc_func = [&, A_inf, sigma_b, x0_b, t_r, tau_b](
     //                 double t,
     //                 std::vector<std::complex<double>>& beta_hat,
     //                 std::vector<std::complex<double>>& gamma_hat) {
@@ -142,7 +152,7 @@ int main() {
 
 
     // 平坦底部
-    p.bc_func = [&](double t,
+    g_dno_params.bc_func = [&](double t,
                     std::vector<std::complex<double>>& beta_hat,
                     std::vector<std::complex<double>>& gamma_hat) {
         std::vector<double> beta_phy(N);
@@ -154,7 +164,7 @@ int main() {
                 std::complex<double>(0.0, 0.0));
     };
     
-    // p.bc_func = [&](double t,
+    // g_dno_params.bc_func = [&](double t,
     //                 std::vector<std::complex<double>>& beta_hat,
     //                 std::vector<std::complex<double>>& gamma_hat) {
     //     std::vector<double> b_phy(N), g_phy(N);
@@ -167,24 +177,36 @@ int main() {
     //     gamma_hat = fft_obj->fft(double_to_complex_real(g_phy));
     // };
 
-    // 5.5 输出记录：每 0.01 时间单位写出一次 η、ξ、β，Ek/Ep/I/V
-    DNOOutputConfig out_cfg;
-    out_cfg.enabled  = true;
-    out_cfg.interval = 0.001;
-    out_cfg.x_axis   = x_grid;          // 长度必须 = N
-    out_cfg.eta_file  = "eta.txt";
-    out_cfg.xi_file   = "xi.txt";
-    out_cfg.beta_file = "beta.txt";
-    out_cfg.EVI_file = "EVI.txt";
+    // 5.5 输出记录：每 output_interval 时间单位写出一次 η、ξ、β，Ek/Ep/I/V
+    g_dno_params.enable_output  = true;
+    g_dno_params.output_interval = 0.01;
+    g_dno_params.eta_file  = "eta.txt";
+    g_dno_params.xi_file   = "xi.txt";
+    g_dno_params.beta_file = "beta.txt";
+    g_dno_params.EVI_file = "EVI.txt";
 
-    DNOOutputRecorder recorder(out_cfg, /*t0=*/0.0);
+    // 模拟开始时刻与终止时刻(s)
+    g_dno_params.t0 = 0.0;
+    g_dno_params.t_end = 5.0;
+
+    // 滤波器参数配置
+    g_lowpass_params.type = LowPassType::Exponential;
+    g_lowpass_params.k_cut = 1.0 * g_dno_params.k_max;
+    g_lowpass_params.width = 1.0;
+    g_lowpass_params.alpha = 36.0;
+    g_lowpass_params.m = 36.0;
+
+    recorder = std::make_unique<DNOOutputRecorder>();
 
     // 6. 时间推进
     const size_t n = dno_time_integrate(
-        state, /*t0=*/0.0, /*t_end=*/5, /*dt_init=*/1e-4,
-        /*rtol=*/5e-12, /*atol=*/1e-12, p,
-        /*max_steps=*/1000000,
-        &recorder);
+        state, 
+        /*dt_init=*/1e-4,
+        /*enable_filter=*/true,
+        /*filter_interval=*/0.01,
+        /*rtol=*/5e-12, 
+        /*atol=*/1e-12,
+        /*max_steps=*/1000000);
 
     std::cout << "Accepted steps: " << n << "\n";
     return 0;

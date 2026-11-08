@@ -95,7 +95,6 @@ struct RK45BufferCache
 // ---------------------------------------------------------------------
 RK45AttemptResult rk45_step(
     double t, double dt,
-    const DNOSystemParams& p,
     DNOState& state,
     double rtol, double atol,
     double safety     = 0.9,
@@ -108,20 +107,14 @@ RK45AttemptResult rk45_step(
 //   - 当剩余时间不足 dt 时，把 dt 收缩到恰好落在 t_end；
 //   - 返回实际接受的步数；
 //   - 若 dt 下溢到 阈值 以下或步数超过 max_steps，抛异常。
-// 新增参数：
-//   recorder  可选输出记录器；为 nullptr 或 disabled 时不做任何记录。
-//             若提供，本函数会：
-//               - 在 t0 处写出初始记录；
-//               - 每一步接受后若已到达记录时刻，则写出记录。
-//             调用者需保证 recorder 在调用前已用 (cfg, t0) 构造。
 // ---------------------------------------------------------------------
 size_t dno_time_integrate(
     DNOState& state,
-    double t0, double t_end,
     double dt_init,
-    double rtol, double atol,
-    const DNOSystemParams& p,
-    size_t max_steps = 100000,
-    DNOOutputRecorder* recorder = nullptr);
+    bool enable_filter, // whether to apply low-pass filtering during integration
+    double filter_interval, // time interval for low-pass filtering
+    double rtol, 
+    double atol,
+    size_t max_steps = 100000);
 
 #endif // DNO_TIME_INTEGRAL_H

@@ -1212,8 +1212,7 @@ private:
     std::variant<fft1d, fft2d> impl;
 };
 
-// global fft_op object - external initialization required
-extern std::unique_ptr<fft_op> fft_obj;
+
 
 // =====================================================================
 // Low-pass filter tools
@@ -1235,6 +1234,16 @@ enum class LowPassType {
     Butterworth   ///< 1 / sqrt(1 + (|k|/k_cut)^(2*order)).
 };
 
+struct LowPassFilterParams {
+    LowPassType type;
+    double k_cut;
+    double width = 1.0;  // transition width for smooth filters
+    double alpha = 36.0;  // parameter for Exponential filter
+    double m = 36.0;      // parameter for Exponential filter
+    double order = 2.0;  // filter order for Butterworth
+};
+
+
 /**
  * @brief Builds a real-valued low-pass transfer function H(k).
  *
@@ -1242,13 +1251,6 @@ enum class LowPassType {
  * the multiplicative filter weights applied to the spectrum.
  *
  * @param k_axis Wavenumber axis. Values may be negative (FFT order).
- * @param k_cut  Cut-off wavenumber (>0).
- * @param type   Filter type (see LowPassType).
- * @param width  Transition half-width used by Gaussian / FivePoint /
- *               Exponential filters. Interpreted as a fraction of k_cut
- *               when type == FivePoint (0..1). For Gaussian / Exponential
- *               it is a relative scale factor.
- * @param order  Filter order for Exponential / Butterworth.
  *
  * @return Vector<double> H(k) of the same length as k_axis.
  *
@@ -1256,11 +1258,7 @@ enum class LowPassType {
  *         or width <= 0 for smooth filters.
  */
 std::vector<double> build_lowpass_transfer(
-    const std::vector<double>& k_axis,
-    double k_cut,
-    LowPassType type,
-    double width = 1.0,
-    double order = 2.0);
+    const std::vector<double>& k_axis);
 
 /**
  * @brief Applies a low-pass filter to a complex spectrum.
@@ -1273,10 +1271,6 @@ std::vector<double> build_lowpass_transfer(
  *
  * @param k_axis Wavenumber axis (same size as f_hat).
  * @param f_hat  Input complex spectrum.
- * @param k_cut  Cut-off wavenumber.
- * @param type   Filter type.
- * @param width  Transition width (see build_lowpass_transfer).
- * @param order  Filter order (see build_lowpass_transfer).
  *
  * @return Filtered complex spectrum, same size as f_hat.
  *
@@ -1284,10 +1278,11 @@ std::vector<double> build_lowpass_transfer(
  */
 std::vector<std::complex<double>> lowpass_filter_spectrum(
     const std::vector<double>& k_axis,
-    const std::vector<std::complex<double>>& f_hat,
-    double k_cut,
-    LowPassType type,
-    double width = 1.0,
-    double order = 2.0);
+    const std::vector<std::complex<double>>& f_hat);
+
+// global fft_op object - external initialization required
+extern std::unique_ptr<fft_op> fft_obj;
+// global lowpass filter parameters - external initialization required if use filter
+extern LowPassFilterParams g_lowpass_params;
 
 #endif//VAR_OP_FUNCTION_H

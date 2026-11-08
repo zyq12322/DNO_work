@@ -3,6 +3,8 @@
 
 // global fft_op object - external initialization required
 std::unique_ptr<fft_op> fft_obj;
+// global lowpass filter parameters - external initialization required
+LowPassFilterParams g_lowpass_params;
 
 /**
  * @brief Computes L2 error metrics between two real-valued vectors.
@@ -268,37 +270,43 @@ fft2d::ifft2(const std::vector<std::complex<double>>& input)
 // =====================================================================
 
 std::vector<double> build_lowpass_transfer(
-    const std::vector<double>& k_axis,
-    double k_cut,
-    LowPassType type,
-    double width,
-    double order)
+    const std::vector<double>& k_axis)
 {
     if (k_axis.empty())
     {
         throw std::invalid_argument(
             "build_lowpass_transfer: k_axis is empty.");
     }
-    if (k_cut <= 0.0)
+    if (g_lowpass_params.k_cut <= 0.0)
     {
         throw std::invalid_argument(
             "build_lowpass_transfer: k_cut must be positive.");
     }
-    if (width <= 0.0)
+    if (g_lowpass_params.width <= 0.0)
     {
         throw std::invalid_argument(
             "build_lowpass_transfer: width must be positive.");
     }
-    if (order <= 0.0)
+    if (g_lowpass_params.order <= 0.0)
     {
         throw std::invalid_argument(
             "build_lowpass_transfer: order must be positive.");
+    }
+    if (g_lowpass_params.alpha <= 0.0)
+    {
+        throw std::invalid_argument(
+            "build_lowpass_transfer: alpha must be positive.");
+    }
+    if (g_lowpass_params.m <= 0.0)
+    {
+        throw std::invalid_argument(
+            "build_lowpass_transfer: m must be positive.");
     }
 
     std::vector<double> H;
     H.reserve(k_axis.size());
 
-    switch (type)
+    switch (g_lowpass_params.type)
     {
     // -------------------------------------------------------------
     // Ideal low-pass: hard cut at k_cut.
@@ -307,26 +315,22 @@ std::vector<double> build_lowpass_transfer(
     {
         for (double k : k_axis)
         {
-            H.push_back((std::abs(k) <= k_cut) ? 1.0 : 0.0);
+            H.push_back((std::abs(k) <= g_lowpass_params.k_cut) ? 1.0 : 0.0);
         }
         break;
     }
 
     // -------------------------------------------------------------
-    // Exponential: H(k) = exp(-order * (|k|/k_cut)^order)
+    // Exponential: H(k) = exp(-alpha * (|k|/k_cut)^m)
     //
-    // - order = 2  -> Gaussian-like
-    // - order -> 1 -> exponential decay
-    // - order -> ∞ -> approaches ideal filter
-    // width rescales k_cut (k_eff = k_cut * width).
     // -------------------------------------------------------------
     case LowPassType::Exponential:
     {
-        const double k_eff = k_cut * width;
+        const double k_eff = g_lowpass_params.k_cut * g_lowpass_params.width;
         for (double k : k_axis)
         {
             const double r = std::abs(k) / k_eff;
-            H.push_back(std::exp(-order * std::pow(r, order)));
+            H.push_back(std::exp(- g_lowpass_params.alpha * std::pow(r, g_lowpass_params.m)));
         }
         break;
     }
@@ -337,7 +341,7 @@ std::vector<double> build_lowpass_transfer(
     // -------------------------------------------------------------
     case LowPassType::Gaussian:
     {
-        const double sigma = k_cut * width;
+        const double sigma = g_lowpass_params.k_cut * g_lowpass_params.width;
         for (double k : k_axis)
         {
             const double r = std::abs(k) / sigma;
@@ -358,7 +362,7 @@ std::vector<double> build_lowpass_transfer(
     // -------------------------------------------------------------
     case LowPassType::FivePoint:
     {
-        const double sigma = k_cut * width;
+        const double sigma = g_lowpass_params.k_cut * g_lowpass_params.width;
         for (double k : k_axis)
         {
             const double ak = std::abs(k);
@@ -388,8 +392,8 @@ std::vector<double> build_lowpass_transfer(
     {
         for (double k : k_axis)
         {
-            const double r = std::abs(k) / k_cut;
-            H.push_back(1.0 / std::sqrt(1.0 + std::pow(r, 2.0 * order)));
+            const double r = std::abs(k) / g_lowpass_params.k_cut;
+            H.push_back(1.0 / std::sqrt(1.0 + std::pow(r, 2.0 * g_lowpass_params.order)));
         }
         break;
     }
@@ -400,11 +404,7 @@ std::vector<double> build_lowpass_transfer(
 
 std::vector<std::complex<double>> lowpass_filter_spectrum(
     const std::vector<double>& k_axis,
-    const std::vector<std::complex<double>>& f_hat,
-    double k_cut,
-    LowPassType type,
-    double width,
-    double order)
+    const std::vector<std::complex<double>>& f_hat)
 {
     if (k_axis.size() != f_hat.size())
     {
@@ -413,7 +413,7 @@ std::vector<std::complex<double>> lowpass_filter_spectrum(
     }
 
     const std::vector<double> H =
-        build_lowpass_transfer(k_axis, k_cut, type, width, order);
+        build_lowpass_transfer(k_axis);
 
     std::vector<std::complex<double>> out(f_hat.size());
 

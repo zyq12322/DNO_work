@@ -1157,7 +1157,6 @@ void partial_xi_partial_t_2d(
     C.ensure_size(N, DNO_M, DNO_Mb);
 
     const auto& eta_hat = eta_pow_hat[1];
-    const std::complex<double> imag_unit(0.0, 1.0);
 
     // η 物理空间表示
     C.eta_phy = fft_obj->ifft(eta_hat);
@@ -1168,8 +1167,8 @@ void partial_xi_partial_t_2d(
         C.G_phy  = fft_obj->ifft(G_hat);
 
         for (size_t i = 0; i < N; ++i) {
-            C.eta_x_hat[i] = imag_unit * D_pow_hat[1][i] * eta_hat[i];
-            C.xi_x_hat[i]  = imag_unit * D_pow_hat[1][i] * xi_hat[i];
+            C.eta_x_hat[i] = ImUnit * D_pow_hat[1][i] * eta_hat[i];
+            C.xi_x_hat[i]  = ImUnit * D_pow_hat[1][i] * xi_hat[i];
         }
         C.eta_x_phy = fft_obj->ifft(C.eta_x_hat);
         C.xi_x_phy  = fft_obj->ifft(C.xi_x_hat);
@@ -1190,8 +1189,8 @@ void partial_xi_partial_t_2d(
     } else {
         // ---------- dealiaser 分支 ----------
         for (size_t i = 0; i < N; ++i) {
-            C.eta_x_hat[i] = imag_unit * D_pow_hat[1][i] * eta_hat[i];
-            C.xi_x_hat[i]  = imag_unit * D_pow_hat[1][i] * xi_hat[i];
+            C.eta_x_hat[i] = ImUnit * D_pow_hat[1][i] * eta_hat[i];
+            C.xi_x_hat[i]  = ImUnit * D_pow_hat[1][i] * xi_hat[i];
         }
 
         (*dealiaser)(C.eta_x_hat.data(), C.eta_x_hat.data(), false, false, C.eta_x_2_hat.data());

@@ -8,6 +8,8 @@
 #include <fstream>
 #include <cstddef>
 #include <functional>
+#include <variant>
+#include <memory>
 
 // ---------------------------------------------------------------------
 // β、γ 时间回调：给定时刻 t，填充 beta_hat 和 gamma_hat({\partial_t \eta} _hat)
@@ -36,29 +38,22 @@ struct DNOSystemParams {
     int    DNO_M;                   // η 最大幂次
     int    DNO_Mb;                  // β 最大幂次
     bool   dealiase_flag;           // 是否使用反混叠
+    double t0 = 0.0;                // 初始时刻
+    double t_end = 0.0;                // 终止时刻
+    std::vector<double> x_axis;     // 物理网格 (m)，长度 N
     std::vector<double> k_axis;     // 角波数轴 (rad/m)，长度 N
+    double k_max;                     // 最大波数 (rad/m)，用于低通滤波
     DNOBottomFunc bc_func;              // β、γ 时间回调
-};
 
-// ---------------------------------------------------------------------
-// DNO 输出配置
-//
-// 每隔 interval 时间单位，把 η、ξ、β EVI 的物理空间值写入文件。
-// eta/xi/beta文件格式：
-//   第 1 行 : 0, x0, x1, ..., x_{N-1} (0, x_axis[0], ...)
-//   第 k 行 : t_i, f(x0), f(x1), ..., f(x_{N-1}) , i = 0, 1 , ...
-// EVI文件格式(total in computational domain):
-//   t_i, E_k, E_p, I, V
-// ---------------------------------------------------------------------
-struct DNOOutputConfig {
-    bool                enabled   = false;// flag for recording or not
-    double              interval  = 0.0;         // 记录时间间隔
-    std::vector<double> x_axis;                  // 物理网格（长度 N）
+    // 输出控制
+    bool                enable_output   = false;// flag for recording or not
+    double              output_interval  = 0.0;         // 记录时间间隔
     std::string         eta_file  = "eta.txt";
     std::string         xi_file   = "xi.txt";
     std::string         beta_file = "beta.txt";
     std::string         EVI_file = "EVI.txt"; // energy/volume/momentum
 };
+
 
 // ---------------------------------------------------------------------
 // DNO 输出记录器
@@ -80,34 +75,33 @@ struct DNOOutputConfig {
 //     disabled 状态，due() 恒返回 false，record() 不做任何事。
 //   - 要求全局 fft_obj 已初始化（用于 ifft 到物理空间）。
 //   - 三个输入向量必须与 x_axis 长度一致。
+//   - 实例化该类前应先在主程序中正确填充全局设置g_dno_params参数
 // ---------------------------------------------------------------------
 class DNOOutputRecorder {
 public:
-    DNOOutputRecorder() = default;
 
     // 构造时若启用，则打开三个文件并写入表头行。
-    // t0 用作首次记录时刻（next_record_t_ 初始化为 t0）。
-    DNOOutputRecorder(const DNOOutputConfig& cfg, double t0);
+    //（next_record_t_ 初始化为 t0）。
+    DNOOutputRecorder();
 
+    // 是否具备输出的条件
     bool   enabled()   const noexcept { return record_; }
 
-    // 是否应该在时刻 t 调用 record()（带 1e-12 容差）
+    // 是否应该在时刻 t 调用 record()（带容差）
     bool due(double t) const noexcept {
-        return record_ && t >= next_record_t_ - 1e-12;
+        return record_ && t >= next_record_t_ - 1e-14;
     }
 
     // 写出时刻 t 的一条记录，之后把 next_record_t_ 推进到 t + interval。
     // eta_hat / xi_hat / beta_hat / gamma_hat 均为傅里叶空间系数，长度 = N。
     void record(double t,
                 const std::vector<std::complex<double>>& eta_hat,
-                const std::vector<std::complex<double>>& xi_hat,
-                const std::vector<std::complex<double>>& beta_hat,
-                const std::vector<std::complex<double>>& gamma_hat,
-                const DNOSystemParams& p);
+                const std::vector<std::complex<double>>& xi_hat);
 
 private:
-    DNOOutputConfig cfg_;
+    // 是否具备输出的条件
     bool            record_         = false;
+    // 下一输出时刻
     double          next_record_t_  = 0.0;
 
     std::ofstream   eta_out_;
@@ -121,6 +115,8 @@ private:
     std::vector<std::complex<double>> eta_phy_;
     std::vector<std::complex<double>> xi_phy_;
     std::vector<std::complex<double>> beta_phy_;
+    std::vector<std::complex<double>> beta_hat_;
+    std::vector<std::complex<double>> gamma_hat_;
 
     std::vector<std::complex<double>> G_hat_;
     std::vector<std::complex<double>> G_phy_;
@@ -139,5 +135,11 @@ private:
     // 积分被积函数（double 序列）
     std::vector<double> f_Ek_, f_Ep_, f_I_, f_V_;
 };
+
+// 全局控制数据结构体
+extern DNOSystemParams g_dno_params;
+// global object - external initialization required
+// 此项必须在全局设置g_dno_params全部正确填充了之后初始化
+extern std::unique_ptr<DNOOutputRecorder> recorder;
 
 #endif // DNO_OUTPUT_CONTROL_H
